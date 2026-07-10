@@ -1,181 +1,162 @@
-import type { Scan, ChatMessage, ScanStage } from "../types";
-import { MOCK_SCANS, MOCK_CHAT } from "./mock";
+// ui/src/lib/api.ts
+//
+// The single seam the whole UI talks to. Drop this in place of the
+// existing file (or merge the `else` branches in) — the component
+// layer never changes, per ui/README.md.
+//
+// Toggle with VITE_USE_MOCK in ui/.env. When false, every call below
+// goes to Supabase: scrape/analyze results are stored via db.ts, and
+// chat/scrape/analyze logic itself is expected to live in a Supabase
+// Edge Function (or your own backend) reachable via supabase.functions.invoke.
+// This file focuses on the "store what got scraped" half of that pipeline.
 
-/**
- * The single seam between UI and backend.
- *
- * While teammates (P3/P4/P5) finish the Supabase edge functions, everything
- * runs on the mock store below. Flip USE_MOCK to false (or set VITE_USE_MOCK
- * = "false") once the real endpoints are live — the component layer never
- * changes, only this file.
- */
-export const USE_MOCK =
-  (import.meta.env.VITE_USE_MOCK ?? "true").toString() !== "false";
+import { supabase } from "./supabaseClient";
+import * as db from "./db";
+import type { Dossier, ScrapedPage } from "./db";
+import * as mock from "./mock";
 
-/** Staged loading copy — the "feels magical, not slow" sequence. */
-export const SCAN_STAGES: ScanStage[] = [
-  { label: "Reading the site…" },
-  { label: "Understanding what they do…" },
-  { label: "Building your dossier…" },
-];
+const USE_MOCK = import.meta.env.VITE_USE_MOCK !== "false";
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Shape returned to the UI — mirrors PLAN.md §3.2 / ui/src/types.ts.
+// If your real types.ts differs, adjust the mapping functions below
+// (toScan / toMessage) rather than the callers.
+export type Scan = {
+  id: string;
+  url: string;
+  status: "pending" | "scraping" | "analyzing" | "ready" | "error";
+  dossier: Dossier | null;
+  isPublic: boolean;
+  publicId: string | null;
+  createdAt: string;
+};
 
-// --- In-memory mock store -------------------------------------------------
+export type ChatAnswer = {
+  answer: string;
+  messageId: string;
+  citation?: { label?: string; url?: string; snippet?: string };
+};
 
-const store: Scan[] = [...MOCK_SCANS];
-const chats: Record<string, ChatMessage[]> = structuredClone(MOCK_CHAT);
+function toScan(row: db.ScanRow): Scan {
+  return {
+    id: row.id,
+    url: row.url,
+    status: row.status,
+    dossier: row.dossier,
+    isPublic: row.is_public,
+    publicId: row.public_id,
+    createdAt: row.created_at,
+  };
+}
 
-function titleFromUrl(url: string): string {
+// ------------------------------------------------------------
+// runScan(url) -> POST /scrape then POST /analyze -> Scan
+// ------------------------------------------------------------
+export async function runScan(url: string): Promise<Scan> {
+  if (USE_MOCK) return mock.runScan(url);
+
+  // 1. Create the scan row up front so the UI can navigate to /scan/:id
+  //    and show progress immediately.
+  const scanRow = await db.createScan(url);
+
   try {
-    const host = new URL(url).hostname.replace(/^www\./, "");
-    const base = host.split(".")[0];
-    return base.charAt(0).toUpperCase() + base.slice(1);
-  } catch {
-    return "Untitled site";
+    // 2. Scrape. Replace this invoke with wherever your scraper actually
+    //    lives (Edge Function, separate backend, etc). It must return the
+    //    list of pages it collected.
+    await db.updateScanStatus(scanRow.id, "scraping");
+    const { data: scrapeData, error: scrapeError } =
+      await supabase.functions.invoke("scrape", { body: { url } });
+    if (scrapeError) throw scrapeError;
+
+    const pages: ScrapedPage[] = scrapeData.pages ?? [];
+    await db.saveScrapedPages(scanRow.id, pages);
+
+    // 3. Analyze -> structured dossier.
+    await db.updateScanStatus(scanRow.id, "analyzing");
+    const { data: analyzeData, error: analyzeError } =
+      await supabase.functions.invoke("analyze", {
+        body: { scanId: scanRow.id },
+      });
+    if (analyzeError) throw analyzeError;
+
+    const dossier: Dossier = analyzeData.dossier ?? {};
+    const finalRow = await db.saveDossier(scanRow.id, dossier);
+    return toScan(finalRow);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Scan failed";
+    await db.updateScanStatus(scanRow.id, "error", message);
+    throw err;
   }
 }
 
-// --- Public API -----------------------------------------------------------
-
-export async function listScans(): Promise<Scan[]> {
-  if (USE_MOCK) {
-    await wait(180);
-    return [...store].sort((a, b) => b.created_at.localeCompare(a.created_at));
-  }
-  throw new Error("Live listScans not wired yet");
+// ------------------------------------------------------------
+// getScan(scanId) -> Scan  (for /scan/:id)
+// ------------------------------------------------------------
+export async function getScan(scanId: string): Promise<Scan | null> {
+  if (USE_MOCK) return mock.getScan(scanId);
+  const row = await db.getScan(scanId);
+  return row ? toScan(row) : null;
 }
 
-export async function getScan(id: string): Promise<Scan | null> {
-  if (USE_MOCK) {
-    await wait(150);
-    return store.find((s) => s.id === id) ?? null;
-  }
-  throw new Error("Live getScan not wired yet");
+// ------------------------------------------------------------
+// listRecentScans() -> Scan[]  (for /app)
+// ------------------------------------------------------------
+export async function listRecentScans(): Promise<Scan[]> {
+  if (USE_MOCK) return mock.listRecentScans();
+  const rows = await db.listRecentScans();
+  return rows.map(toScan);
 }
 
-export async function getSharedScan(publicId: string): Promise<Scan | null> {
-  if (USE_MOCK) {
-    await wait(150);
-    return store.find((s) => s.public_id === publicId) ?? null;
-  }
-  throw new Error("Live getSharedScan not wired yet");
+// ------------------------------------------------------------
+// getPublicScan(publicId) -> Scan  (for /share/:publicId)
+// ------------------------------------------------------------
+export async function getPublicScan(publicId: string): Promise<Scan | null> {
+  if (USE_MOCK) return mock.getPublicScan(publicId);
+  const row = await db.getPublicScan(publicId);
+  return row ? toScan(row) : null;
 }
 
-/**
- * Full scan pipeline: scrape → analyze. In mock mode we clone an existing
- * dossier so any URL returns something demo-worthy. `onStage` drives the
- * staged loading copy.
- */
-export async function runScan(
-  url: string,
-  onStage?: (index: number) => void
-): Promise<Scan> {
-  if (USE_MOCK) {
-    for (let i = 0; i < SCAN_STAGES.length; i++) {
-      onStage?.(i);
-      await wait(950);
-    }
-    // Match a known demo host to its curated dossier; otherwise pick one so
-    // any URL still returns something believable.
-    let host = "";
-    try {
-      host = new URL(url).hostname.replace(/^www\./, "");
-    } catch {
-      /* ignore */
-    }
-    const matched = MOCK_SCANS.find((s) => {
-      try {
-        return new URL(s.url).hostname.replace(/^www\./, "") === host;
-      } catch {
-        return false;
-      }
-    });
-    const template =
-      matched ?? MOCK_SCANS[Math.floor(Math.random() * MOCK_SCANS.length)];
-    const title = titleFromUrl(url);
-    const scan: Scan = {
-      ...structuredClone(template),
-      id: `scan_${Date.now()}`,
-      url,
-      title,
-      created_at: new Date().toISOString(),
-      public_id: null,
-    };
-    store.unshift(scan);
-    return scan;
-  }
-  throw new Error("Live runScan not wired yet");
-}
-
-export async function getMessages(scanId: string): Promise<ChatMessage[]> {
-  if (USE_MOCK) {
-    await wait(120);
-    return chats[scanId] ? [...chats[scanId]] : [];
-  }
-  throw new Error("Live getMessages not wired yet");
-}
-
-/** Ask a question about a scanned site. Mock answers are grounded + cited. */
+// ------------------------------------------------------------
+// askQuestion(scanId, q) -> POST /chat -> { answer, message_id } (+ citation)
+// ------------------------------------------------------------
 export async function askQuestion(
   scanId: string,
   question: string
-): Promise<{ user: ChatMessage; assistant: ChatMessage }> {
-  if (USE_MOCK) {
-    const scan = store.find((s) => s.id === scanId);
-    const now = Date.now();
-    const user: ChatMessage = {
-      id: `m_${now}`,
-      role: "user",
-      content: question,
-      created_at: new Date().toISOString(),
-    };
-    await wait(1100);
-    const cite = scan?.dossier.key_pages[0] ?? {
-      label: "Homepage",
-      url: scan?.url ?? "",
-    };
-    const assistant: ChatMessage = {
-      id: `m_${now + 1}`,
-      role: "assistant",
-      content: mockAnswer(question, scan),
-      citation: cite,
-      created_at: new Date().toISOString(),
-    };
-    chats[scanId] = [...(chats[scanId] ?? []), user, assistant];
-    return { user, assistant };
-  }
-  throw new Error("Live askQuestion not wired yet");
+): Promise<ChatAnswer> {
+  if (USE_MOCK) return mock.askQuestion(scanId, question);
+
+  // Store the user's turn.
+  await db.saveChatMessage(scanId, "user", question);
+
+  // Ask the chat function (RAG over scraped_pages for this scan, cited).
+  const { data, error } = await supabase.functions.invoke("chat", {
+    body: { scanId, question },
+  });
+  if (error) throw error;
+
+  const citation = data.citation
+    ? {
+        label: data.citation.label,
+        url: data.citation.url,
+        snippet: data.citation.snippet,
+      }
+    : undefined;
+
+  const saved = await db.saveChatMessage(
+    scanId,
+    "assistant",
+    data.answer,
+    citation
+  );
+
+  return { answer: data.answer, messageId: saved.id, citation };
 }
 
-export async function clearMessages(scanId: string): Promise<void> {
-  if (USE_MOCK) {
-    chats[scanId] = [];
-    return;
-  }
-  throw new Error("Live clearMessages not wired yet");
-}
-
-/** Toggle a scan public and return its share id. */
-export async function toggleShare(scanId: string): Promise<string | null> {
-  if (USE_MOCK) {
-    const scan = store.find((s) => s.id === scanId);
-    if (!scan) return null;
-    scan.public_id = scan.public_id ?? Math.random().toString(36).slice(2, 8);
-    return scan.public_id;
-  }
-  throw new Error("Live toggleShare not wired yet");
-}
-
-function mockAnswer(question: string, scan?: Scan): string {
-  if (!scan) return "The site doesn't mention this.";
-  const q = question.toLowerCase();
-  const d = scan.dossier;
-  if (q.includes("pric") || q.includes("cost") || q.includes("plan"))
-    return `Pricing reads as ${d.pricing_hint}. ${d.notable_claims.find((c) => /price|plan|\$|%|free/i.test(c)) ?? d.notable_claims[0]}`;
-  if (q.includes("who") || q.includes("audience") || q.includes("for"))
-    return d.target_audience;
-  if (q.includes("product") || q.includes("do") || q.includes("offer"))
-    return `${d.summary} Their main offerings: ${d.products.slice(0, 3).join(", ")}.`;
-  return d.summary;
+// ------------------------------------------------------------
+// toggleShare(scanId) -> RPC that sets public_id
+// ------------------------------------------------------------
+export async function toggleShare(
+  scanId: string
+): Promise<{ isPublic: boolean; publicId: string | null }> {
+  if (USE_MOCK) return mock.toggleShare(scanId);
+  return db.toggleShare(scanId);
 }
