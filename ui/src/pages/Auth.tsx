@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
 import { TopNav } from "../components/TopNav";
+import { supabase } from "../lib/supabase";
+import { USE_MOCK } from "../lib/api";
 
 const EASE = [0.23, 1, 0.32, 1] as const;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -11,14 +13,27 @@ export function Auth() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     if (!EMAIL.test(email.trim())) {
       setError("Please enter a valid email address.");
       return;
     }
     setError(null);
-    // Wiring note: this is where supabase.auth.signInWithOtp({ email }) goes.
+
+    if (USE_MOCK) {
+      setSent(true);
+      return;
+    }
+
+    const { error: authError } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { emailRedirectTo: `${window.location.origin}/app` },
+    });
+    if (authError) {
+      setError(authError.message);
+      return;
+    }
     setSent(true);
   }
 
