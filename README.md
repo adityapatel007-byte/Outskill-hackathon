@@ -87,8 +87,4 @@ no UI changes. Details in [`ui/README.md`](ui/README.md).
 
 ---
 
-<div align="center">
 
-Built by **Aditya Patel** 🔨
-
-</div>
