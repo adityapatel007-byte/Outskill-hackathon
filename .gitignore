@@ -28,3 +28,7 @@ Thumbs.db
 
 # Claude Code personal settings (shared settings.json is fine to commit)
 .claude/settings.local.json
+
+# Internal planning docs — kept locally, not published to the repo
+PLAN.md
+TEAM.md
