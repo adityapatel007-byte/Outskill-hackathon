@@ -1,0 +1,76 @@
+/*
+ * SiteSense design tokens — "Analyst's Desk Lamp".
+ * Light default = warm daylight on the desk. Dark toggle = the same desk under the lamp.
+ * Warmth is carried by the amber accent + serif, NOT by a muddy cream background.
+ * Every ink/bg pair below is checked to clear WCAG AA (>= 4.5:1 for body text).
+ */
+
+@theme {
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* House easings (emilk): strong ease-out, never ease-in for UI. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root,
+[data-theme="light"] {
+  --bg: #f8f7f5;
+  --surface: #ffffff;
+  --surface-2: #f1efea;
+  --rule: #e4e1db;
+  --rule-strong: #d3cfc6;
+
+  --ink: #1a1714;        /* body — ~14:1 on bg */
+  --ink-strong: #0f0d0b; /* headings */
+  --ink-soft: #4a453e;   /* ~8:1 on surface */
+  --ink-mute: #6e6860;   /* ~5.2:1 on surface — secondary only */
+
+  --accent: #d98a2b;       /* honey — button fill */
+  --accent-hover: #c2761c;
+  --accent-text: #9a5a12;  /* burnt amber — links/citations, AA on light */
+  --accent-soft: #f5e6ce;  /* wash / hover surface */
+  --on-accent: #1a1714;    /* dark text on honey fill — ~6.5:1 */
+
+  --sage: #4f6f4a;  /* confidence / positive */
+  --clay: #a2542a;  /* caution */
+
+  --lens-core: #f2c078;
+  --lens-glow: #e8a24a;
+
+  --shadow-color: 30 25 20;
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #17140f;         /* warm charcoal, not black — less glare for older eyes */
+  --surface: #201c16;
+  --surface-2: #14110c;
+  --rule: #332e26;
+  --rule-strong: #423b31;
+
+  --ink: #ece4d6;        /* warm paper — ~12:1 on bg */
+  --ink-strong: #fbf6ec;
+  --ink-soft: #b8af9e;
+  --ink-mute: #8a8172;
+
+  --accent: #e6a95c;
+  --accent-hover: #f0b76a;
+  --accent-text: #f0b76a;
+  --accent-soft: #33291b;
+  --on-accent: #1a1408;
+
+  --sage: #8fb08a;
+  --clay: #d08a5a;
+
+  --lens-core: #ffd9a0;
+  --lens-glow: #e8a24a;
+
+  --shadow-color: 0 0 0;
+
+  color-scheme: dark;
+}
