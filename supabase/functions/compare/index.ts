@@ -12,7 +12,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const AI_URL = "https://api.groq.com/openai/v1/chat/completions";
-const AI_MODEL = "llama-3.3-70b-versatile";
+const AI_MODEL = "llama-3.1-8b-instant";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -75,6 +75,7 @@ function isValidComparison(c: any): boolean {
 }
 
 async function callAI(apiKey: string, systemMsg: string, userMsg: string) {
+  let lastErr = null;
   const res = await fetch(AI_URL, {
     method: "POST",
     headers: {
@@ -88,8 +89,7 @@ async function callAI(apiKey: string, systemMsg: string, userMsg: string) {
       messages: [
         { role: "system", content: systemMsg },
         { role: "user", content: userMsg },
-      ],
-      response_format: { type: "json_object" },
+      ]
     }),
   });
   if (!res.ok) {
@@ -180,13 +180,14 @@ Deno.serve(async (req) => {
           };
           break;
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error("Comparison attempt failed:", e);
+        lastErr = e?.message || e;
       }
     }
 
     if (!comparison) {
-      return json({ error: "The comparison came back unreadable. Please try again." }, 502);
+      return json({ error: `The comparison came back unreadable. Please try again. (Debug: ${lastErr})` }, 502);
     }
 
     return json({ comparison });
