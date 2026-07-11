@@ -27,6 +27,21 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Honor Groq's retry-after (header or "try again in 6.9s") so a chat right
+// after a compare doesn't fail on the rate limit.
+function retryDelayMs(res: Response, bodyText: string, attempt: number): number {
+  const header = res.headers.get("retry-after");
+  if (header) {
+    const s = parseFloat(header);
+    if (!isNaN(s)) return Math.min(s * 1000 + 400, 25000);
+  }
+  const m = bodyText.match(/try again in ([0-9.]+)\s*s/i);
+  if (m) return Math.min(parseFloat(m[1]) * 1000 + 400, 25000);
+  return Math.min(1500 * (attempt + 1), 8000);
+}
+
 // The model returns an answer, whether the page actually covers it, and the
 // INDEX of the key page that best supports it (or null). We map that index
 // back to a real {label, url}, so citations can never be hallucinated URLs.
@@ -104,27 +119,39 @@ Deno.serve(async (req) => {
       "Respond with ONLY a JSON object matching this schema:\n" +
       JSON.stringify(ANSWER_SCHEMA, null, 2);
 
-    const aiRes = await fetch(AI_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${aiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        temperature: 0.3,
-        max_tokens: 1500,
-        messages: [
-          { role: "system", content: systemMsg },
-          ...(history ?? []).map((m) => ({ role: m.role, content: m.content })),
-          { role: "user", content: question },
-        ],
-        response_format: { type: "json_object" },
-      }),
-    });
+    let aiRes: Response | null = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      aiRes = await fetch(AI_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${aiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: AI_MODEL,
+          temperature: 0.3,
+          max_tokens: 1000,
+          messages: [
+            { role: "system", content: systemMsg },
+            ...(history ?? []).map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: question },
+          ],
+          response_format: { type: "json_object" },
+        }),
+      });
 
-    if (!aiRes.ok) {
-      console.error("AI provider error:", aiRes.status, await aiRes.text());
+      if (aiRes.ok) break;
+
+      const errText = await aiRes.text();
+      console.error("AI provider error:", aiRes.status, errText);
+      if ((aiRes.status === 429 || aiRes.status >= 500) && attempt < 4) {
+        await sleep(retryDelayMs(aiRes, errText, attempt));
+        continue;
+      }
+      return json({ error: "The AI couldn't answer right now. Please try again." }, 502);
+    }
+
+    if (!aiRes || !aiRes.ok) {
       return json({ error: "The AI couldn't answer right now. Please try again." }, 502);
     }
 

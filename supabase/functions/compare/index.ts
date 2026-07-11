@@ -74,30 +74,55 @@ function isValidComparison(c: any): boolean {
   );
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Work out how long to wait after a 429 — Groq tells us via the `retry-after`
+// header or in its error message ("Please try again in 6.9s").
+function retryDelayMs(res: Response, bodyText: string, attempt: number): number {
+  const header = res.headers.get("retry-after");
+  if (header) {
+    const s = parseFloat(header);
+    if (!isNaN(s)) return Math.min(s * 1000 + 400, 25000);
+  }
+  const m = bodyText.match(/try again in ([0-9.]+)\s*s/i);
+  if (m) return Math.min(parseFloat(m[1]) * 1000 + 400, 25000);
+  return Math.min(1500 * (attempt + 1), 8000);
+}
+
 async function callAI(apiKey: string, systemMsg: string, userMsg: string) {
-  let lastErr = null;
-  const res = await fetch(AI_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      temperature: 0.3,
-      max_tokens: 800,
-      messages: [
-        { role: "system", content: systemMsg },
-        { role: "user", content: userMsg },
-      ]
-    }),
-  });
-  if (!res.ok) {
-    console.error("AI provider error:", res.status, await res.text());
+  // Retry rate-limit (429) / transient 5xx, honoring Groq's own retry-after.
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const res = await fetch(AI_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        temperature: 0.3,
+        max_tokens: 700,
+        messages: [
+          { role: "system", content: systemMsg },
+          { role: "user", content: userMsg },
+        ]
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data?.choices?.[0]?.message?.content ?? "";
+    }
+    lastStatus = res.status;
+    const errText = await res.text();
+    console.error("AI provider error:", res.status, errText);
+    if (res.status === 429 || res.status >= 500) {
+      await sleep(retryDelayMs(res, errText, attempt));
+      continue;
+    }
     throw new Error(`AI request failed (${res.status})`);
   }
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content ?? "";
+  throw new Error(`AI request failed (${lastStatus})`);
 }
 
 Deno.serve(async (req) => {
@@ -148,9 +173,12 @@ Deno.serve(async (req) => {
       "Respond with ONLY a JSON object matching this schema:\n" +
       JSON.stringify(COMPARISON_SCHEMA, null, 2);
 
+    // Compact + capped dossiers keep the compare call well under Groq's TPM.
+    const dossierA = JSON.stringify(a.dossier).slice(0, 2500);
+    const dossierB = JSON.stringify(b.dossier).slice(0, 2500);
     const userMsg =
-      `COMPANY A: ${a.title} (${a.url})\nDOSSIER A:\n${JSON.stringify(a.dossier, null, 2)}\n\n` +
-      `COMPANY B: ${b.title} (${b.url})\nDOSSIER B:\n${JSON.stringify(b.dossier, null, 2)}`;
+      `COMPANY A: ${a.title} (${a.url})\nDOSSIER A:\n${dossierA}\n\n` +
+      `COMPANY B: ${b.title} (${b.url})\nDOSSIER B:\n${dossierB}`;
 
     const strictSystemMsg =
       systemMsg +

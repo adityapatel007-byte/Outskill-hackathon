@@ -67,7 +67,26 @@ Array.isArray(d.notable_claims)
 );
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Work out how long to wait after a 429. Groq tells us exactly, either via the
+// `retry-after` header or in the error message ("Please try again in 6.9s").
+function retryDelayMs(res: Response, bodyText: string, attempt: number): number {
+const header = res.headers.get("retry-after");
+if (header) {
+const s = parseFloat(header);
+if (!isNaN(s)) return Math.min(s * 1000 + 400, 25000);
+}
+const m = bodyText.match(/try again in ([0-9.]+)\s*s/i);
+if (m) return Math.min(parseFloat(m[1]) * 1000 + 400, 25000);
+return Math.min(1500 * (attempt + 1), 8000); // fallback backoff
+}
+
 async function callAI(apiKey: string, systemMsg: string, userMsg: string) {
+// Retry rate-limit (429) / transient 5xx, honoring Groq's own retry-after so a
+// compare (two analyses fired at once) doesn't fail on the TPM limit.
+let lastStatus = 0;
+for (let attempt = 0; attempt < 5; attempt++) {
 const res = await fetch(AI_URL, {
 method: "POST",
 headers: {
@@ -77,7 +96,7 @@ Authorization: `Bearer ${apiKey}`,
 body: JSON.stringify({
 model: AI_MODEL,
 temperature: 0.2,
-max_tokens: 800,
+max_tokens: 600,
 messages: [
 { role: "system", content: systemMsg },
 { role: "user", content: userMsg },
@@ -85,14 +104,21 @@ messages: [
 }),
 });
 
-if (!res.ok) {
-const errText = await res.text();
-console.error("AI provider error:", res.status, errText);
-throw new Error(`AI request failed (${res.status})`);
-}
-
+if (res.ok) {
 const data = await res.json();
 return data?.choices?.[0]?.message?.content ?? "";
+}
+
+lastStatus = res.status;
+const errText = await res.text();
+console.error("AI provider error:", res.status, errText);
+if (res.status === 429 || res.status >= 500) {
+await sleep(retryDelayMs(res, errText, attempt));
+continue;
+}
+throw new Error(`AI request failed (${res.status})`);
+}
+throw new Error(`AI request failed (${lastStatus})`);
 }
 
 Deno.serve(async (req) => {
@@ -132,7 +158,9 @@ const strictSystemMsg =
 systemMsg +
 "\n\nIMPORTANT: Your previous answer was invalid. Output ONLY a single valid JSON object exactly matching the schema - no markdown, no commentary, all fields present.";
 
-const userMsg = `Website URL: ${scan.url}\nPage title: ${scan.title}\n\nScraped page content (markdown):\n"""\n${scan.raw_content}\n"""`;
+// Cap the content we send so two analyses (a compare) stay under Groq's TPM.
+const contentForAI = (scan.raw_content ?? "").slice(0, 3000);
+const userMsg = `Website URL: ${scan.url}\nPage title: ${scan.title}\n\nScraped page content (markdown):\n"""\n${contentForAI}\n"""`;
 
 let dossier: any = null;
 let lastError: any = null;
