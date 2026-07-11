@@ -191,7 +191,12 @@ export async function runCompare(
     onStage?.(stage);
   }, 6000);
   try {
-    const [scanA, scanB] = await Promise.all([runScan(urlA), runScan(urlB)]);
+    // Scan the two sites SEQUENTIALLY, not in parallel. Running them at once
+    // fires two AI analyses simultaneously and blows past the model's
+    // tokens-per-minute limit (429). One-after-another keeps each call under
+    // the limit so comparisons succeed reliably.
+    const scanA = await runScan(urlA);
+    const scanB = await runScan(urlB);
     onStage?.(COMPARE_STAGES.length - 1);
     const { comparison } = await callFunction<{ comparison: Comparison }>(
       "compare",
