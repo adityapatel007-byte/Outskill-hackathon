@@ -11,7 +11,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const MAX_CONTENT_CHARS = 10_000;
+const MAX_CONTENT_CHARS = 6000;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

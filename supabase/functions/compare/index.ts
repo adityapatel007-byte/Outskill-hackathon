@@ -85,7 +85,7 @@ async function callAI(apiKey: string, systemMsg: string, userMsg: string) {
     body: JSON.stringify({
       model: AI_MODEL,
       temperature: 0.3,
-      max_tokens: 2000,
+      max_tokens: 800,
       messages: [
         { role: "system", content: systemMsg },
         { role: "user", content: userMsg },

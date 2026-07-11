@@ -77,7 +77,7 @@ Authorization: `Bearer ${apiKey}`,
 body: JSON.stringify({
 model: AI_MODEL,
 temperature: 0.2,
-max_tokens: 3000,
+max_tokens: 800,
 messages: [
 { role: "system", content: systemMsg },
 { role: "user", content: userMsg },
