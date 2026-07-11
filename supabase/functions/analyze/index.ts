@@ -10,7 +10,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 // Groq: free API (no credit card) serving open-source models.
 const AI_URL = "https://api.groq.com/openai/v1/chat/completions";
-const AI_MODEL = "llama-3.3-70b-versatile";
+const AI_MODEL = "llama-3.1-8b-instant";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
