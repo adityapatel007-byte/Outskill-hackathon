@@ -8,6 +8,17 @@ export function prettyHost(url: string): string {
   }
 }
 
+/** Short, punchy brand name from a URL — "nike.com" → "Nike". */
+export function brandName(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    const base = host.split(".")[0];
+    return base.charAt(0).toUpperCase() + base.slice(1);
+  } catch {
+    return url;
+  }
+}
+
 export function relativeDate(iso: string): string {
   const then = new Date(iso).getTime();
   const diff = Date.now() - then;

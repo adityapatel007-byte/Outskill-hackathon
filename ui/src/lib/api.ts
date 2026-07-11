@@ -1,228 +1,212 @@
-import type { Scan, ChatMessage, ScanStage } from "../types";
-import { MOCK_SCANS, MOCK_CHAT } from "./mock";
+// ============================================================
+// src/lib/api.ts — REAL implementation (replaces the mock seam)
+//
+// Talks to the team's Supabase project:
+//   - tables `scans` / `messages` for reads
+//   - edge functions `scrape` / `analyze` / `chat` for the pipeline
+// Requires ui/.env with VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY,
+// VITE_USE_MOCK=false. The Supabase client is the shared one in ./supabase
+// (same instance used by the Auth page), so there's a single client.
+// ============================================================
+
+import type {
+  Scan,
+  ChatMessage,
+  ScanStage,
+  Comparison,
+  CompareResult,
+} from "../types";
 import { supabase } from "./supabase";
 
-/**
- * The single seam between UI and backend.
- *
- * While teammates (P3/P4/P5) finish the Supabase edge functions, everything
- * runs on the mock store below. Flip USE_MOCK to false (or set VITE_USE_MOCK
- * = "false") once the real endpoints are live — the component layer never
- * changes, only this file.
- */
 export const USE_MOCK =
   (import.meta.env.VITE_USE_MOCK ?? "true").toString() !== "false";
 
-/** Staged loading copy — the "feels magical, not slow" sequence. */
 export const SCAN_STAGES: ScanStage[] = [
   { label: "Reading the site…" },
   { label: "Understanding what they do…" },
   { label: "Building your dossier…" },
 ];
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Staged loading copy for a head-to-head comparison (reads two sites). */
+export const COMPARE_STAGES: ScanStage[] = [
+  { label: "Reading both sites…" },
+  { label: "Building each dossier…" },
+  { label: "Judging the head-to-head…" },
+];
 
-// --- In-memory mock store -------------------------------------------------
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-const store: Scan[] = [...MOCK_SCANS];
-const chats: Record<string, ChatMessage[]> = structuredClone(MOCK_CHAT);
+// Columns the UI needs (never fetch raw_content — it's backend-only)
+const SCAN_COLUMNS = "id, url, title, created_at, dossier, public_id";
 
-function titleFromUrl(url: string): string {
-  try {
-    const host = new URL(url).hostname.replace(/^www\./, "");
-    const base = host.split(".")[0];
-    return base.charAt(0).toUpperCase() + base.slice(1);
-  } catch {
-    return "Untitled site";
+// --- Helper: call an edge function and surface its error message ---
+// Sends the logged-in user's access token (so functions can identify the owner);
+// falls back to the anon key when signed out.
+async function callFunction<T>(name: string, body: unknown): Promise<T> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const bearer = session?.access_token ?? SUPABASE_ANON_KEY;
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer}`,
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.error ?? "Something went wrong. Please try again.");
   }
+  return data as T;
 }
 
-// --- Public API -----------------------------------------------------------
+// ------------------------------------------------------------
+// API functions (same signatures as the mock version)
+// ------------------------------------------------------------
 
 export async function listScans(): Promise<Scan[]> {
-  if (USE_MOCK) {
-    await wait(180);
-    return [...store].sort((a, b) => b.created_at.localeCompare(a.created_at));
-  }
   const { data, error } = await supabase
     .from("scans")
-    .select("*")
+    .select(SCAN_COLUMNS)
+    .not("dossier", "is", null) // hide scans whose analysis never finished
     .order("created_at", { ascending: false });
-  if (error) throw error;
-  return data as Scan[];
+
+  if (error) throw new Error("Couldn't load your scans.");
+  return (data ?? []) as unknown as Scan[];
 }
 
 export async function getScan(id: string): Promise<Scan | null> {
-  if (USE_MOCK) {
-    await wait(150);
-    return store.find((s) => s.id === id) ?? null;
-  }
-  const { data, error } = await supabase.from("scans").select("*").eq("id", id).maybeSingle();
-  if (error) throw error;
-  return (data as Scan | null) ?? null;
+  const { data, error } = await supabase
+    .from("scans")
+    .select(SCAN_COLUMNS)
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) throw new Error("Couldn't load this scan.");
+  return (data as unknown as Scan) ?? null;
 }
 
 export async function getSharedScan(publicId: string): Promise<Scan | null> {
-  if (USE_MOCK) {
-    await wait(150);
-    return store.find((s) => s.public_id === publicId) ?? null;
-  }
   const { data, error } = await supabase
     .from("scans")
-    .select("*")
+    .select(SCAN_COLUMNS)
     .eq("public_id", publicId)
     .maybeSingle();
-  if (error) throw error;
-  return (data as Scan | null) ?? null;
+
+  if (error) throw new Error("Couldn't load this shared scan.");
+  return (data as unknown as Scan) ?? null;
 }
 
-/**
- * Full scan pipeline: scrape → analyze. In mock mode we clone an existing
- * dossier so any URL returns something demo-worthy. `onStage` drives the
- * staged loading copy.
- */
 export async function runScan(
   url: string,
-  onStage?: (index: number) => void
+  onStage?: (index: number) => void,
 ): Promise<Scan> {
-  if (USE_MOCK) {
-    for (let i = 0; i < SCAN_STAGES.length; i++) {
-      onStage?.(i);
-      await wait(950);
-    }
-    // Match a known demo host to its curated dossier; otherwise pick one so
-    // any URL still returns something believable.
-    let host = "";
-    try {
-      host = new URL(url).hostname.replace(/^www\./, "");
-    } catch {
-      /* ignore */
-    }
-    const matched = MOCK_SCANS.find((s) => {
-      try {
-        return new URL(s.url).hostname.replace(/^www\./, "") === host;
-      } catch {
-        return false;
-      }
-    });
-    const template =
-      matched ?? MOCK_SCANS[Math.floor(Math.random() * MOCK_SCANS.length)];
-    const title = titleFromUrl(url);
-    const scan: Scan = {
-      ...structuredClone(template),
-      id: `scan_${Date.now()}`,
-      url,
-      title,
-      created_at: new Date().toISOString(),
-      public_id: null,
-    };
-    store.unshift(scan);
-    return scan;
-  }
-
-  // Drive the staged loading copy client-side while the single edge-function
-  // call (scrape + analyze + store) runs in the background.
-  let stageIndex = 0;
+  // Stage 0: scraping
   onStage?.(0);
-  const stageTimer = setInterval(() => {
-    stageIndex = Math.min(stageIndex + 1, SCAN_STAGES.length - 1);
-    onStage?.(stageIndex);
-  }, 1400);
+  const { scan_id } = await callFunction<{ scan_id: string; title: string }>(
+    "scrape",
+    { url },
+  );
 
+  // Stage 1 + 2: analyzing / building dossier
+  onStage?.(1);
+  const stageTimer = setTimeout(() => onStage?.(2), 4000);
   try {
-    const { data, error } = await supabase.functions.invoke("scrape-analyze", {
-      body: { url },
-    });
-    if (error) throw error;
-    if (data?.error) throw new Error(data.error);
-    return data as Scan;
+    const scan = await callFunction<Scan>("analyze", { scan_id });
+    return scan;
   } finally {
-    clearInterval(stageTimer);
+    clearTimeout(stageTimer);
   }
 }
 
 export async function getMessages(scanId: string): Promise<ChatMessage[]> {
-  if (USE_MOCK) {
-    await wait(120);
-    return chats[scanId] ? [...chats[scanId]] : [];
-  }
   const { data, error } = await supabase
-    .from("chat_messages")
-    .select("*")
+    .from("messages")
+    .select("id, role, content, citation, created_at")
     .eq("scan_id", scanId)
     .order("created_at", { ascending: true });
-  if (error) throw error;
-  return data as ChatMessage[];
+
+  if (error) throw new Error("Couldn't load the conversation.");
+  return (data ?? []) as unknown as ChatMessage[];
 }
 
-/** Ask a question about a scanned site. Mock answers are grounded + cited. */
 export async function askQuestion(
   scanId: string,
-  question: string
+  question: string,
 ): Promise<{ user: ChatMessage; assistant: ChatMessage }> {
-  if (USE_MOCK) {
-    const scan = store.find((s) => s.id === scanId);
-    const now = Date.now();
-    const user: ChatMessage = {
-      id: `m_${now}`,
-      role: "user",
-      content: question,
-      created_at: new Date().toISOString(),
-    };
-    await wait(1100);
-    const cite = scan?.dossier.key_pages[0] ?? {
-      label: "Homepage",
-      url: scan?.url ?? "",
-    };
-    const assistant: ChatMessage = {
-      id: `m_${now + 1}`,
-      role: "assistant",
-      content: mockAnswer(question, scan),
-      citation: cite,
-      created_at: new Date().toISOString(),
-    };
-    chats[scanId] = [...(chats[scanId] ?? []), user, assistant];
-    return { user, assistant };
-  }
-  const { data, error } = await supabase.functions.invoke("chat", {
-    body: { scan_id: scanId, question },
+  return callFunction<{ user: ChatMessage; assistant: ChatMessage }>("chat", {
+    scan_id: scanId,
+    question,
   });
-  if (error) throw error;
-  if (data?.error) throw new Error(data.error);
-  return data as { user: ChatMessage; assistant: ChatMessage };
 }
 
 export async function clearMessages(scanId: string): Promise<void> {
-  if (USE_MOCK) {
-    chats[scanId] = [];
-    return;
-  }
-  const { error } = await supabase.from("chat_messages").delete().eq("scan_id", scanId);
-  if (error) throw error;
+  const { error } = await supabase
+    .from("messages")
+    .delete()
+    .eq("scan_id", scanId);
+
+  if (error) throw new Error("Couldn't clear the conversation.");
 }
 
-/** Toggle a scan public and return its share id. */
 export async function toggleShare(scanId: string): Promise<string | null> {
-  if (USE_MOCK) {
-    const scan = store.find((s) => s.id === scanId);
-    if (!scan) return null;
-    scan.public_id = scan.public_id ?? Math.random().toString(36).slice(2, 8);
-    return scan.public_id;
-  }
-  const { data, error } = await supabase.rpc("toggle_share", { scan_id: scanId });
-  if (error) throw error;
-  return (data as string) ?? null;
+  const { data, error } = await supabase.rpc("toggle_share", {
+    p_scan_id: scanId,
+  });
+
+  if (error) throw new Error("Couldn't update sharing.");
+  return (data as string | null) ?? null;
 }
 
-function mockAnswer(question: string, scan?: Scan): string {
-  if (!scan) return "The site doesn't mention this.";
-  const q = question.toLowerCase();
-  const d = scan.dossier;
-  if (q.includes("pric") || q.includes("cost") || q.includes("plan"))
-    return `Pricing reads as ${d.pricing_hint}. ${d.notable_claims.find((c) => /price|plan|\$|%|free/i.test(c)) ?? d.notable_claims[0]}`;
-  if (q.includes("who") || q.includes("audience") || q.includes("for"))
-    return d.target_audience;
-  if (q.includes("product") || q.includes("do") || q.includes("offer"))
-    return `${d.summary} Their main offerings: ${d.products.slice(0, 3).join(", ")}.`;
-  return d.summary;
+// --- Comparison -----------------------------------------------------------
+// Comparisons are assembled client-side: scan both sites (which persist to the
+// `scans` table), then ask the `compare` edge function for the verdict. The
+// result is held for the session so the result page can read it by id.
+
+const compares: CompareResult[] = [];
+
+export async function getCompare(id: string): Promise<CompareResult | null> {
+  return compares.find((c) => c.id === id) ?? null;
+}
+
+/**
+ * Compare two sites head-to-head: scrape + analyze each, then a grounded
+ * verdict. `onStage` drives the staged loading copy.
+ */
+export async function runCompare(
+  urlA: string,
+  urlB: string,
+  onStage?: (index: number) => void,
+): Promise<CompareResult> {
+  onStage?.(0);
+  let stage = 0;
+  const ticker = setInterval(() => {
+    stage = Math.min(stage + 1, COMPARE_STAGES.length - 1);
+    onStage?.(stage);
+  }, 6000);
+  try {
+    const [scanA, scanB] = await Promise.all([runScan(urlA), runScan(urlB)]);
+    onStage?.(COMPARE_STAGES.length - 1);
+    const { comparison } = await callFunction<{ comparison: Comparison }>(
+      "compare",
+      { scan_id_a: scanA.id, scan_id_b: scanB.id },
+    );
+    const result: CompareResult = {
+      id: `cmp_${Date.now()}`,
+      created_at: new Date().toISOString(),
+      a: { url: scanA.url, title: scanA.title, dossier: scanA.dossier },
+      b: { url: scanB.url, title: scanB.title, dossier: scanB.dossier },
+      comparison,
+    };
+    compares.unshift(result);
+    return result;
+  } finally {
+    clearInterval(ticker);
+  }
 }

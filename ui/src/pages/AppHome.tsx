@@ -51,7 +51,20 @@ export function AppHome() {
 
   return (
     <div className="min-h-dvh">
-      <TopNav />
+      <TopNav
+        right={
+          <Link
+            to="/compare"
+            className="press inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-[0.9rem] font-medium"
+            style={{ background: "var(--surface)", color: "var(--ink)", border: "1px solid var(--rule-strong)" }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M18 20V10M12 20V4M6 20v-6" />
+            </svg>
+            Compare
+          </Link>
+        }
+      />
       <main className="mx-auto max-w-3xl px-5 pb-20 pt-12 sm:px-8">
         <motion.div
           initial={{ opacity: 0, y: 12 }}

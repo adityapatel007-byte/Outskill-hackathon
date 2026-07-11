@@ -7,16 +7,23 @@ import { Lens } from "../components/Lens";
 import { ScanningState } from "../components/ScanningState";
 import { runScan } from "../lib/api";
 import { MOCK_SCANS } from "../lib/mock";
+import { useSession } from "../hooks/useSession";
 
 const EASE = [0.23, 1, 0.32, 1] as const;
 
 export function Landing() {
   const navigate = useNavigate();
+  const { session } = useSession();
   const [phase, setPhase] = useState<"idle" | "scanning">("idle");
   const [stage, setStage] = useState(0);
   const [scanUrl, setScanUrl] = useState("");
 
   async function handleScan(url: string) {
+    // Scanning needs an account — funnel guests to sign in first.
+    if (!session) {
+      navigate("/auth");
+      return;
+    }
     setScanUrl(url);
     setStage(0);
     setPhase("scanning");
@@ -118,7 +125,9 @@ export function Landing() {
             >
               <UrlField onScan={handleScan} />
               <p className="mt-3 px-2 text-[0.9rem]" style={{ color: "var(--ink-mute)" }}>
-                Try it on a site you know — no sign-up to look.
+                {session
+                  ? "Paste a site you know and get a dossier in seconds."
+                  : "Create a free account to scan any site and save your dossiers."}
               </p>
             </motion.div>
           </motion.div>
@@ -130,7 +139,7 @@ export function Landing() {
 
       <footer className="relative z-10 border-t px-5 py-10 sm:px-8" style={{ borderColor: "var(--rule)" }}>
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 text-[0.85rem] sm:flex-row" style={{ color: "var(--ink-mute)" }}>
-          <span>SiteSense — a hackathon build by team ASP.</span>
+          <span>SiteSense</span>
           <span className="font-[var(--font-mono)]">Paste. Ask. Cite.</span>
         </div>
       </footer>

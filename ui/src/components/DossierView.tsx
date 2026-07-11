@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Scan } from "../types";
 import { prettyHost } from "../lib/format";
+import { downloadDossier } from "../lib/download";
 
 /**
  * The dossier, set like a research brief — a plain-English lead, a labeled
@@ -47,8 +48,19 @@ export function DossierView({
         </a>
 
         {!readOnly && (
-          <div className="mt-5">
+          <div className="mt-5 flex flex-wrap items-center gap-2">
             <ShareControl onShare={onShare} shareId={shareId} sharing={sharing} />
+            <button
+              type="button"
+              onClick={() => downloadDossier(scan)}
+              className="press inline-flex items-center gap-2 rounded-full px-4 py-2 text-[0.9rem] font-medium"
+              style={{ background: "var(--surface)", color: "var(--ink)", border: "1px solid var(--rule-strong)" }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
+              </svg>
+              Download JSON
+            </button>
           </div>
         )}
       </header>

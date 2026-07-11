@@ -13,6 +13,7 @@ const EASE = [0.23, 1, 0.32, 1] as const;
  */
 export function ChatPanel({
   scanId,
+  dossier,
   onBusy,
 }: {
   scanId: string;
@@ -130,31 +131,38 @@ export function ChatPanel({
         )}
 
         <AnimatePresence initial={false}>
-          {messages.map((m) => (
-            <motion.div
-              key={m.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.28, ease: EASE }}
-              className={m.role === "user" ? "flex justify-end" : "flex justify-start"}
-            >
-              <div
-                className="max-w-[85%] rounded-2xl px-4 py-3 leading-relaxed"
-                style={
-                  m.role === "user"
-                    ? { background: "var(--accent-soft)", color: "var(--ink-strong)" }
-                    : { background: "var(--surface-2)", color: "var(--ink)" }
-                }
+          {messages.map((m) => {
+            const notCovered = m.role === "assistant" && m.found === false;
+            return (
+              <motion.div
+                key={m.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.28, ease: EASE }}
+                className={m.role === "user" ? "flex justify-end" : "flex justify-start"}
               >
-                {m.content}
-                {m.role === "assistant" && m.citation && (
-                  <div>
-                    <CitationChip citation={m.citation} />
+                {notCovered ? (
+                  <NotCoveredCard dossier={dossier} onAsk={send} />
+                ) : (
+                  <div
+                    className="max-w-[85%] rounded-2xl px-4 py-3 leading-relaxed"
+                    style={
+                      m.role === "user"
+                        ? { background: "var(--accent-soft)", color: "var(--ink-strong)" }
+                        : { background: "var(--surface-2)", color: "var(--ink)" }
+                    }
+                  >
+                    {m.content}
+                    {m.role === "assistant" && m.citation && (
+                      <div>
+                        <CitationChip citation={m.citation} />
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
 
         {thinking && <ThinkingDots />}
@@ -198,6 +206,77 @@ export function ChatPanel({
       </form>
     </div>
   );
+}
+
+/**
+ * Shown instead of a flat "the site doesn't mention this." When an answer
+ * isn't on the page, hand back something useful: what the site *does* cover,
+ * plus a few questions we know it can answer — each one clickable.
+ */
+function NotCoveredCard({
+  dossier,
+  onAsk,
+}: {
+  dossier: Dossier;
+  onAsk: (q: string) => void;
+}) {
+  const suggestions = suggestFromDossier(dossier);
+  return (
+    <div
+      className="max-w-[92%] rounded-2xl px-4 py-4 leading-relaxed"
+      style={{ background: "var(--surface-2)", color: "var(--ink)" }}
+    >
+      <p style={{ color: "var(--ink-strong)" }}>
+        That isn’t something the site spells out — so I won’t guess. Here’s what
+        it does cover:
+      </p>
+      <p className="mt-2" style={{ color: "var(--ink-soft)" }}>
+        {dossier.summary}
+      </p>
+      {suggestions.length > 0 && (
+        <>
+          <p
+            className="mt-4 font-[var(--font-mono)] text-[0.72rem] tracking-[0.12em]"
+            style={{ color: "var(--ink-mute)" }}
+          >
+            YOU COULD ASK
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {suggestions.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => onAsk(q)}
+                className="press rounded-full px-3.5 py-2 text-[0.85rem]"
+                style={{ background: "var(--surface)", color: "var(--ink)", border: "1px solid var(--rule)" }}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** A few questions we're confident the dossier can answer, tailored to it. */
+function suggestFromDossier(d: Dossier): string[] {
+  const qs: string[] = [];
+  const hasPricing =
+    d.pricing_hint !== "unknown" ||
+    d.key_pages.some((p) => /pric|plan|cost/i.test(p.label));
+  if (hasPricing) qs.push("How does their pricing work?");
+  if (d.products[0]) {
+    const name = d.products[0].replace(/\s*\(.*\)\s*$/, "").trim();
+    qs.push(`What is ${name}?`);
+  }
+  if (d.target_audience) qs.push("Who is this built for?");
+  for (const p of d.key_pages) {
+    if (qs.length >= 3) break;
+    if (!/pric|plan|cost/i.test(p.label)) qs.push(`What's on their ${p.label} page?`);
+  }
+  return Array.from(new Set(qs)).slice(0, 3);
 }
 
 function ThinkingDots() {

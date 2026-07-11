@@ -41,10 +41,47 @@ export interface ChatMessage {
   content: string;
   /** Present on grounded assistant answers: the source the answer cites. */
   citation?: KeyPage | null;
+  /** false when the page didn't cover the question (UI shows a friendly card). */
+  found?: boolean;
   created_at: string;
 }
 
 /** The staged messages shown while a scrape + analyze runs. */
 export interface ScanStage {
   label: string;
+}
+
+// --- Comparison ------------------------------------------------------------
+
+/** Which side a category favours: "a", "b", or a tie. */
+export type CompareSide = "a" | "b" | "tie";
+
+export interface CompareCategory {
+  name: string;
+  winner: CompareSide;
+  /** One sentence, grounded in a concrete fact from the winning site. */
+  reason: string;
+}
+
+/** The head-to-head verdict returned by the `compare` edge function. */
+export interface Comparison {
+  summary: string;
+  categories: CompareCategory[];
+  verdict: string;
+}
+
+/** One company in a comparison — its dossier plus identity. */
+export interface CompareParty {
+  url: string;
+  title: string;
+  dossier: Dossier;
+}
+
+/** A comparison of two sites (assembled client-side from two scans + a verdict). */
+export interface CompareResult {
+  id: string;
+  created_at: string;
+  a: CompareParty;
+  b: CompareParty;
+  comparison: Comparison;
 }
